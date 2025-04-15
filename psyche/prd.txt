@@ -1,20 +1,22 @@
 # Interactive Art Image Streaming Application - PRD
 
 ## Project Overview
-An interactive art installation that displays a stream of images from a Python backend on a web interface. The system will eventually be expanded to respond to audience voice input (not part of this initial scope). This PRD focuses on building the core image streaming functionality.
+An interactive art installation that displays streams of images from a Python backend on multiple web canvases. Each canvas has a unique identifier (slug) and can receive independent image streams. The system will eventually be expanded to respond to audience voice input (not part of this initial scope). This PRD focuses on building the core image streaming functionality with support for multiple canvases.
 
 ## Core Requirements
 
 ### Backend (Python)
 - Create a Python backend capable of:
   - Loading images using Pillow
-  - Streaming these images to a web frontend at up to 4 FPS
+  - Streaming these images to specific web canvases at up to 4 FPS
   - Tracking and sending timestamps for each image
+  - Managing multiple canvas connections independently
   - Running locally (no cloud deployment needed at this stage)
 
 ### Frontend (Web)
 - Create a minimal, distraction-free web interface that:
-  - Displays images streamed from the Python backend
+  - Displays multiple canvases, each with a unique identifier
+  - Shows images streamed from the Python backend to specific canvases
   - Shows timestamps for when images change
   - Has no visible buttons or controls
   - Can handle images up to 4K resolution (though initial implementation will use 500-800px images)
@@ -23,7 +25,8 @@ An interactive art installation that displays a stream of images from a Python b
 
 ### Communication Protocol
 - Implement WebSockets for real-time, low-latency communication between frontend and backend
-- Ensure the system can maintain close to 4 FPS streaming rate
+- Support canvas-specific WebSocket connections using unique slugs
+- Ensure the system can maintain close to 4 FPS streaming rate per canvas
 
 ## Technical Specifications
 
@@ -32,11 +35,13 @@ An interactive art installation that displays a stream of images from a Python b
 - **Image Processing**: Pillow
 - **WebSocket Library**: FastAPI's built-in WebSocket support
 - **Development Server**: Uvicorn
+- **Canvas Management**: Dictionary-based connection tracking with unique slugs
 
 ### Frontend
 - **Framework**: React (widely used and well-supported)
 - **WebSocket Client**: native WebSocket API or socket.io-client
 - **Styling**: Minimal CSS, potentially using styled-components
+- **Canvas Component**: Reusable React component for individual canvases
 
 ### Communication
 - **Protocol**: WebSockets
@@ -65,6 +70,7 @@ import base64
 import datetime
 import asyncio
 import uuid
+from typing import Dict, Set
 
 app = FastAPI()
 
@@ -77,48 +83,55 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Store active connections
-connections = []
+# Store active connections per canvas
+canvas_connections: Dict[str, Set[WebSocket]] = {
+    "left-canva": set(),
+    "right-canva": set()
+}
 ```
 
 #### WebSocket Connection Handling
 ```python
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
+@app.websocket("/ws/{canvas_slug}")
+async def websocket_endpoint(websocket: WebSocket, canvas_slug: str):
+    if canvas_slug not in canvas_connections:
+        await websocket.close()
+        return
+    
     await websocket.accept()
-    connections.append(websocket)
+    canvas_connections[canvas_slug].add(websocket)
     try:
         while True:
-            # Keep connection alive
             await websocket.receive_text()
     except Exception:
-        connections.remove(websocket)
+        canvas_connections[canvas_slug].remove(websocket)
 ```
 
 #### Image Streaming Function
 ```python
-async def send_image(image_path):
+async def send_image(img: Image.Image, canvas_slug: str):
     """
-    Load an image and send it to all connected clients.
+    Send a PIL Image to all connected clients of a specific canvas.
     """
+    if canvas_slug not in canvas_connections:
+        return
+    
+    connections = canvas_connections[canvas_slug]
     if not connections:
         return
     
-    # Open and process the image
-    img = Image.open(image_path)
+    # Process and send image to specific canvas
     buffer = io.BytesIO()
     img.save(buffer, format="JPEG")
     img_str = base64.b64encode(buffer.getvalue()).decode('utf-8')
     
-    # Create the message
     message = {
         "timestamp": datetime.datetime.now().isoformat(),
         "image": img_str,
         "image_id": str(uuid.uuid4())
     }
     
-    # Send to all clients
-    for connection in connections:
+    for connection in list(connections):
         try:
             await connection.send_json(message)
         except Exception:
@@ -139,7 +152,7 @@ async def test_stream(num_images: int = 10, fps: float = 1.0):
     for i in range(num_images):
         # This would use actual images in production
         test_image_path = f"test_images/image_{i}.jpg"
-        await send_image(test_image_path)
+        await send_image(Image.open(test_image_path), "left-canva")
         await asyncio.sleep(sleep_time)
     
     return {"status": "complete"}
@@ -153,22 +166,18 @@ if __name__ == "__main__":
 
 ### Frontend (React)
 
-#### App.js
+#### Canvas Component
 ```jsx
-import React, { useState, useEffect, useCallback } from 'react';
-import './App.css';
-
-function App() {
+function Canvas({ slug }) {
   const [imageData, setImageData] = useState(null);
   const [timestamp, setTimestamp] = useState(null);
   const [socket, setSocket] = useState(null);
 
-  // Initialize WebSocket connection
   useEffect(() => {
-    const ws = new WebSocket('ws://localhost:8000/ws');
+    const ws = new WebSocket(`ws://localhost:8000/ws/${slug}`);
     
     ws.onopen = () => {
-      console.log('Connected to the server');
+      console.log(`Connected to the server for ${slug}`);
       // Keep connection alive
       setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
@@ -188,11 +197,11 @@ function App() {
     };
     
     ws.onerror = (error) => {
-      console.error('WebSocket error:', error);
+      console.error(`WebSocket error for ${slug}:`, error);
     };
     
     ws.onclose = () => {
-      console.log('Disconnected from the server');
+      console.log(`Disconnected from the server for ${slug}`);
     };
     
     setSocket(ws);
@@ -203,86 +212,33 @@ function App() {
         ws.close();
       }
     };
-  }, []);
+  }, [slug]);
 
   return (
-    <div className="app-container">
+    <div className="canvas-container">
       <div className="image-container">
         {imageData ? (
-          <img 
-            src={imageData} 
-            alt="Streamed content" 
-            className="streamed-image"
-          />
+          <img src={imageData} alt={`Streamed content for ${slug}`} />
         ) : (
           <div className="placeholder">Waiting for image stream...</div>
         )}
       </div>
-      
-      {timestamp && (
-        <div className="timestamp">
-          {timestamp}
-        </div>
-      )}
+      {timestamp && <div className="timestamp">{timestamp}</div>}
+      <div className="canvas-label">{slug}</div>
     </div>
   );
 }
-
-export default App;
 ```
 
-#### App.css
-```css
-body, html {
-  margin: 0;
-  padding: 0;
-  height: 100%;
-  width: 100%;
-  overflow: hidden;
-  background-color: #000;
-  font-family: sans-serif;
-}
-
-.app-container {
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  width: 100vw;
-  justify-content: center;
-  align-items: center;
-  position: relative;
-}
-
-.image-container {
-  flex: 1;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  width: 100%;
-  height: 100%;
-}
-
-.streamed-image {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-}
-
-.placeholder {
-  color: #555;
-  font-size: 18px;
-}
-
-.timestamp {
-  position: absolute;
-  bottom: 10px;
-  right: 10px;
-  background-color: rgba(0, 0, 0, 0.5);
-  color: #fff;
-  padding: 5px 10px;
-  border-radius: 3px;
-  font-size: 14px;
-  font-family: monospace;
+#### App Component
+```jsx
+function App() {
+  return (
+    <div className="app-container">
+      <Canvas slug="left-canva" />
+      <Canvas slug="right-canva" />
+    </div>
+  );
 }
 ```
 
@@ -332,7 +288,7 @@ def monitor_directory(directory_path, callback):
 ### Running the Backend
 1. Install dependencies:
    ```
-   pip install fastapi uvicorn pillow python-multipart watchdog
+   pip install fastapi uvicorn pillow python-multipart watchdog websockets
    ```
 
 2. Create a directory for test images.
@@ -362,9 +318,12 @@ def monitor_directory(directory_path, callback):
 3. Add multi-display support if needed
 4. Optimize image streaming for better performance
 5. Implement security measures before public deployment
+6. Add dynamic canvas creation/removal
+7. Implement canvas-specific image processing
 
 ## Performance Considerations
 - Monitor CPU and memory usage during extended operations
 - Implement adaptive quality based on connection speed
 - Consider using WebP format for better compression while maintaining quality
 - Implement proper error handling and recovery mechanisms
+- Monitor connection counts per canvas to prevent overload
