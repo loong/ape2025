@@ -1,0 +1,370 @@
+# Interactive Art Image Streaming Application - PRD
+
+## Project Overview
+An interactive art installation that displays a stream of images from a Python backend on a web interface. The system will eventually be expanded to respond to audience voice input (not part of this initial scope). This PRD focuses on building the core image streaming functionality.
+
+## Core Requirements
+
+### Backend (Python)
+- Create a Python backend capable of:
+  - Loading images using Pillow
+  - Streaming these images to a web frontend at up to 4 FPS
+  - Tracking and sending timestamps for each image
+  - Running locally (no cloud deployment needed at this stage)
+
+### Frontend (Web)
+- Create a minimal, distraction-free web interface that:
+  - Displays images streamed from the Python backend
+  - Shows timestamps for when images change
+  - Has no visible buttons or controls
+  - Can handle images up to 4K resolution (though initial implementation will use 500-800px images)
+  - Takes up the full viewport with no UI chrome
+  - Uses responsive design to adapt to different screen sizes
+
+### Communication Protocol
+- Implement WebSockets for real-time, low-latency communication between frontend and backend
+- Ensure the system can maintain close to 4 FPS streaming rate
+
+## Technical Specifications
+
+### Backend
+- **Language/Framework**: Python 3.8+ with FastAPI
+- **Image Processing**: Pillow
+- **WebSocket Library**: FastAPI's built-in WebSocket support
+- **Development Server**: Uvicorn
+
+### Frontend
+- **Framework**: React (widely used and well-supported)
+- **WebSocket Client**: native WebSocket API or socket.io-client
+- **Styling**: Minimal CSS, potentially using styled-components
+
+### Communication
+- **Protocol**: WebSockets
+- **Data Format**: JSON for metadata with Base64-encoded images
+- **Message Structure**:
+  ```json
+  {
+    "timestamp": "2025-04-15T14:30:00.000Z",
+    "image": "base64_encoded_image_data_here",
+    "image_id": "unique_identifier"
+  }
+  ```
+
+## Implementation Details
+
+### Backend (Python)
+
+#### Setup
+```python
+from fastapi import FastAPI, WebSocket
+from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
+from PIL import Image
+import io
+import base64
+import datetime
+import asyncio
+import uuid
+
+app = FastAPI()
+
+# Allow CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # For development only
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Store active connections
+connections = []
+```
+
+#### WebSocket Connection Handling
+```python
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    connections.append(websocket)
+    try:
+        while True:
+            # Keep connection alive
+            await websocket.receive_text()
+    except Exception:
+        connections.remove(websocket)
+```
+
+#### Image Streaming Function
+```python
+async def send_image(image_path):
+    """
+    Load an image and send it to all connected clients.
+    """
+    if not connections:
+        return
+    
+    # Open and process the image
+    img = Image.open(image_path)
+    buffer = io.BytesIO()
+    img.save(buffer, format="JPEG")
+    img_str = base64.b64encode(buffer.getvalue()).decode('utf-8')
+    
+    # Create the message
+    message = {
+        "timestamp": datetime.datetime.now().isoformat(),
+        "image": img_str,
+        "image_id": str(uuid.uuid4())
+    }
+    
+    # Send to all clients
+    for connection in connections:
+        try:
+            await connection.send_json(message)
+        except Exception:
+            connections.remove(connection)
+```
+
+#### API for Testing
+```python
+@app.get("/test-stream/{num_images}/{fps}")
+async def test_stream(num_images: int = 10, fps: float = 1.0):
+    """
+    Test endpoint that streams a sequence of test images.
+    """
+    # Implementation would load a sequence of test images
+    # and stream them at the specified FPS
+    sleep_time = 1.0 / fps
+    
+    for i in range(num_images):
+        # This would use actual images in production
+        test_image_path = f"test_images/image_{i}.jpg"
+        await send_image(test_image_path)
+        await asyncio.sleep(sleep_time)
+    
+    return {"status": "complete"}
+```
+
+#### Main Function
+```python
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+```
+
+### Frontend (React)
+
+#### App.js
+```jsx
+import React, { useState, useEffect, useCallback } from 'react';
+import './App.css';
+
+function App() {
+  const [imageData, setImageData] = useState(null);
+  const [timestamp, setTimestamp] = useState(null);
+  const [socket, setSocket] = useState(null);
+
+  // Initialize WebSocket connection
+  useEffect(() => {
+    const ws = new WebSocket('ws://localhost:8000/ws');
+    
+    ws.onopen = () => {
+      console.log('Connected to the server');
+      // Keep connection alive
+      setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send('ping');
+        }
+      }, 30000);
+    };
+    
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      setImageData(`data:image/jpeg;base64,${data.image}`);
+      
+      // Format timestamp for display
+      const date = new Date(data.timestamp);
+      setTimestamp(date.toLocaleTimeString() + '.' + 
+                  date.getMilliseconds().toString().padStart(3, '0'));
+    };
+    
+    ws.onerror = (error) => {
+      console.error('WebSocket error:', error);
+    };
+    
+    ws.onclose = () => {
+      console.log('Disconnected from the server');
+    };
+    
+    setSocket(ws);
+    
+    // Cleanup on component unmount
+    return () => {
+      if (ws) {
+        ws.close();
+      }
+    };
+  }, []);
+
+  return (
+    <div className="app-container">
+      <div className="image-container">
+        {imageData ? (
+          <img 
+            src={imageData} 
+            alt="Streamed content" 
+            className="streamed-image"
+          />
+        ) : (
+          <div className="placeholder">Waiting for image stream...</div>
+        )}
+      </div>
+      
+      {timestamp && (
+        <div className="timestamp">
+          {timestamp}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default App;
+```
+
+#### App.css
+```css
+body, html {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background-color: #000;
+  font-family: sans-serif;
+}
+
+.app-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100vw;
+  justify-content: center;
+  align-items: center;
+  position: relative;
+}
+
+.image-container {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+}
+
+.streamed-image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.placeholder {
+  color: #555;
+  font-size: 18px;
+}
+
+.timestamp {
+  position: absolute;
+  bottom: 10px;
+  right: 10px;
+  background-color: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  padding: 5px 10px;
+  border-radius: 3px;
+  font-size: 14px;
+  font-family: monospace;
+}
+```
+
+## Utility Functions for the Backend
+
+### Image Directory Monitor
+```python
+import os
+import time
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+
+class ImageHandler(FileSystemEventHandler):
+    def __init__(self, callback):
+        self.callback = callback
+        self.last_modified = {}
+        
+    def on_created(self, event):
+        if not event.is_directory and self._is_image_file(event.src_path):
+            self.callback(event.src_path)
+            
+    def on_modified(self, event):
+        if not event.is_directory and self._is_image_file(event.src_path):
+            current_time = time.time()
+            if event.src_path in self.last_modified:
+                # Ensure we don't process the same file multiple times
+                if current_time - self.last_modified[event.src_path] > 0.5:
+                    self.callback(event.src_path)
+            else:
+                self.callback(event.src_path)
+            self.last_modified[event.src_path] = current_time
+            
+    def _is_image_file(self, path):
+        ext = os.path.splitext(path)[1].lower()
+        return ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp']
+
+def monitor_directory(directory_path, callback):
+    event_handler = ImageHandler(callback)
+    observer = Observer()
+    observer.schedule(event_handler, directory_path, recursive=True)
+    observer.start()
+    return observer
+```
+
+## Testing and Development
+
+### Running the Backend
+1. Install dependencies:
+   ```
+   pip install fastapi uvicorn pillow python-multipart watchdog
+   ```
+
+2. Create a directory for test images.
+
+3. Run the server:
+   ```
+   python main.py
+   ```
+
+### Running the Frontend
+1. Create a new React app:
+   ```
+   npx create-react-app image-stream-frontend
+   cd image-stream-frontend
+   ```
+
+2. Replace the src/App.js and src/App.css files with the code provided above.
+
+3. Start the development server:
+   ```
+   npm start
+   ```
+
+## Next Steps and Future Enhancements
+1. Add the audio input processing to influence image selection
+2. Implement image transitions/effects
+3. Add multi-display support if needed
+4. Optimize image streaming for better performance
+5. Implement security measures before public deployment
+
+## Performance Considerations
+- Monitor CPU and memory usage during extended operations
+- Implement adaptive quality based on connection speed
+- Consider using WebP format for better compression while maintaining quality
+- Implement proper error handling and recovery mechanisms
