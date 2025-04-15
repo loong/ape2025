@@ -1,7 +1,7 @@
 # Interactive Art Image Streaming Application - PRD
 
 ## Project Overview
-An interactive art installation that displays streams of images from a Python backend on multiple web canvases. Each canvas has a unique identifier (slug) and can receive independent image streams. The system will eventually be expanded to respond to audience voice input (not part of this initial scope). This PRD focuses on building the core image streaming functionality with support for multiple canvases.
+An interactive art installation that displays streams of images from a Python backend on multiple web canvases. Each canvas has a unique identifier (slug) and can receive independent image streams. The system supports both pre-generated image streaming and real-time image generation using SDXL-Turbo. This PRD focuses on building the core image streaming functionality with support for multiple canvases and AI image generation.
 
 ## Core Requirements
 
@@ -11,6 +11,7 @@ An interactive art installation that displays streams of images from a Python ba
   - Streaming these images to specific web canvases at up to 4 FPS
   - Tracking and sending timestamps for each image
   - Managing multiple canvas connections independently
+  - Generating images using SDXL-Turbo via gRPC
   - Running locally (no cloud deployment needed at this stage)
 
 ### Frontend (Web)
@@ -27,6 +28,7 @@ An interactive art installation that displays streams of images from a Python ba
 - Implement WebSockets for real-time, low-latency communication between frontend and backend
 - Support canvas-specific WebSocket connections using unique slugs
 - Ensure the system can maintain close to 4 FPS streaming rate per canvas
+- Use gRPC for communication with the SDXL-Turbo service
 
 ## Technical Specifications
 
@@ -35,7 +37,14 @@ An interactive art installation that displays streams of images from a Python ba
 - **Image Processing**: Pillow
 - **WebSocket Library**: FastAPI's built-in WebSocket support
 - **Development Server**: Uvicorn
-- **Canvas Management**: Dictionary-based connection tracking with unique slugs
+- **Canvas Management**: WebSocketManager class for connection tracking
+- **Image Generation**: SDXL-Turbo gRPC service
+- **Modular Structure**:
+  - `main.py`: Application entry point and routing
+  - `config.py`: Configuration settings and constants
+  - `websocket_manager.py`: WebSocket connection handling
+  - `image_handler.py`: Image processing and sending
+  - `inference_client.py`: SDXL-Turbo service interaction
 
 ### Frontend
 - **Framework**: React (widely used and well-supported)
@@ -44,7 +53,7 @@ An interactive art installation that displays streams of images from a Python ba
 - **Canvas Component**: Reusable React component for individual canvases
 
 ### Communication
-- **Protocol**: WebSockets
+- **Protocol**: WebSockets for canvas communication, gRPC for SDXL-Turbo
 - **Data Format**: JSON for metadata with Base64-encoded images
 - **Message Structure**:
   ```json
@@ -59,108 +68,62 @@ An interactive art installation that displays streams of images from a Python ba
 
 ### Backend (Python)
 
-#### Setup
-```python
-from fastapi import FastAPI, WebSocket
-from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
-from PIL import Image
-import io
-import base64
-import datetime
-import asyncio
-import uuid
-from typing import Dict, Set
+#### Modular Structure
+The backend is organized into several modules:
 
-app = FastAPI()
-
-# Allow CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # For development only
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Store active connections per canvas
-canvas_connections: Dict[str, Set[WebSocket]] = {
-    "left-canva": set(),
-    "right-canva": set()
-}
-```
+1. `config.py`: Contains all configuration settings and constants
+2. `websocket_manager.py`: Handles WebSocket connections and lifecycle
+3. `image_handler.py`: Manages image processing and sending
+4. `inference_client.py`: Handles SDXL-Turbo service interactions
+5. `main.py`: Main application entry point with FastAPI routes
 
 #### WebSocket Connection Handling
 ```python
 @app.websocket("/ws/{canvas_slug}")
 async def websocket_endpoint(websocket: WebSocket, canvas_slug: str):
-    if canvas_slug not in canvas_connections:
-        await websocket.close()
+    if not await ws_manager.connect(websocket, canvas_slug):
         return
-    
-    await websocket.accept()
-    canvas_connections[canvas_slug].add(websocket)
+
     try:
         while True:
             await websocket.receive_text()
-    except Exception:
-        canvas_connections[canvas_slug].remove(websocket)
+    except WebSocketDisconnect:
+        logger.info(f"Client disconnected normally from canvas '{canvas_slug}'")
+    except Exception as e:
+        logger.error(f"Connection error for canvas '{canvas_slug}': {str(e)}")
+    finally:
+        await ws_manager.disconnect(websocket, canvas_slug)
 ```
 
-#### Image Streaming Function
+#### Image Generation and Streaming
 ```python
-async def send_image(img: Image.Image, canvas_slug: str):
-    """
-    Send a PIL Image to all connected clients of a specific canvas.
-    """
-    if canvas_slug not in canvas_connections:
-        return
+@app.get("/test-inference")
+async def test_inference(prompt: str = DEFAULT_PROMPT):
+    """Test endpoint that generates images using SDXL-Turbo."""
+    left_connections = ws_manager.get_connections("left-canva")
+    right_connections = ws_manager.get_connections("right-canva")
     
-    connections = canvas_connections[canvas_slug]
-    if not connections:
-        return
+    if not right_connections:
+        return {"error": "No active connections for right canvas"}
+        
+    # Send test image to left canvas
+    test_img = Image.open(TEST_IMAGE_PATH)
+    await ImageHandler.send_image(test_img, left_connections, "left-canva")
     
-    # Process and send image to specific canvas
-    buffer = io.BytesIO()
-    img.save(buffer, format="JPEG")
-    img_str = base64.b64encode(buffer.getvalue()).decode('utf-8')
-    
-    message = {
-        "timestamp": datetime.datetime.now().isoformat(),
-        "image": img_str,
-        "image_id": str(uuid.uuid4())
-    }
-    
-    for connection in list(connections):
-        try:
-            await connection.send_json(message)
-        except Exception:
-            connections.remove(connection)
-```
-
-#### API for Testing
-```python
-@app.get("/test-stream/{num_images}/{fps}")
-async def test_stream(num_images: int = 10, fps: float = 1.0):
-    """
-    Test endpoint that streams a sequence of test images.
-    """
-    # Implementation would load a sequence of test images
-    # and stream them at the specified FPS
-    sleep_time = 1.0 / fps
-    
-    for i in range(num_images):
-        # This would use actual images in production
-        test_image_path = f"test_images/image_{i}.jpg"
-        await send_image(Image.open(test_image_path), "left-canva")
-        await asyncio.sleep(sleep_time)
-    
-    return {"status": "complete"}
+    # Generate and stream images to right canvas
+    images = inference_client.generate_images(prompt)
+    for img in images:
+        img = ImageHandler.resize_image(img, test_img.size[0], test_img.size[1])
+        await ImageHandler.send_image(img, right_connections, "right-canva")
+        await asyncio.sleep(IMAGE_SEND_INTERVAL)
 ```
 
 #### Main Function
 ```python
 if __name__ == "__main__":
+    # Create test_images directory if it doesn't exist
+    os.makedirs("test_images", exist_ok=True)
+    logger.info("Starting server...")
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
 ```
 
@@ -242,59 +205,23 @@ function App() {
 }
 ```
 
-## Utility Functions for the Backend
-
-### Image Directory Monitor
-```python
-import os
-import time
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
-
-class ImageHandler(FileSystemEventHandler):
-    def __init__(self, callback):
-        self.callback = callback
-        self.last_modified = {}
-        
-    def on_created(self, event):
-        if not event.is_directory and self._is_image_file(event.src_path):
-            self.callback(event.src_path)
-            
-    def on_modified(self, event):
-        if not event.is_directory and self._is_image_file(event.src_path):
-            current_time = time.time()
-            if event.src_path in self.last_modified:
-                # Ensure we don't process the same file multiple times
-                if current_time - self.last_modified[event.src_path] > 0.5:
-                    self.callback(event.src_path)
-            else:
-                self.callback(event.src_path)
-            self.last_modified[event.src_path] = current_time
-            
-    def _is_image_file(self, path):
-        ext = os.path.splitext(path)[1].lower()
-        return ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp']
-
-def monitor_directory(directory_path, callback):
-    event_handler = ImageHandler(callback)
-    observer = Observer()
-    observer.schedule(event_handler, directory_path, recursive=True)
-    observer.start()
-    return observer
-```
-
 ## Testing and Development
 
 ### Running the Backend
 1. Install dependencies:
    ```
-   pip install fastapi uvicorn pillow python-multipart watchdog websockets
+   pip install -r requirements.txt
    ```
 
-2. Create a directory for test images.
-
-3. Run the server:
+2. Ensure SDXL-Turbo service is running:
    ```
+   cd models/sdxl-turbo
+   python server.py
+   ```
+
+3. Run the main application:
+   ```
+   cd psyche/backend
    python main.py
    ```
 
@@ -313,13 +240,15 @@ def monitor_directory(directory_path, callback):
    ```
 
 ## Next Steps and Future Enhancements
-1. Add the audio input processing to influence image selection
+1. Add the audio input processing to influence image generation
 2. Implement image transitions/effects
 3. Add multi-display support if needed
 4. Optimize image streaming for better performance
 5. Implement security measures before public deployment
 6. Add dynamic canvas creation/removal
 7. Implement canvas-specific image processing
+8. Add support for different image generation models
+9. Implement batch processing for multiple canvases
 
 ## Performance Considerations
 - Monitor CPU and memory usage during extended operations
@@ -327,3 +256,5 @@ def monitor_directory(directory_path, callback):
 - Consider using WebP format for better compression while maintaining quality
 - Implement proper error handling and recovery mechanisms
 - Monitor connection counts per canvas to prevent overload
+- Optimize gRPC communication with SDXL-Turbo service
+- Implement proper cleanup of resources in all modules
