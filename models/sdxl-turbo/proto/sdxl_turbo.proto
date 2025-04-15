@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+package sdxl_turbo;
+
+// The SDXL-Turbo service definition
+service SDXLTurboService {
+  // Single image generation
+  rpc Img2Img (Img2ImgRequest) returns (Img2ImgResponse) {}
+  
+  // Batch image generation
+  rpc Img2ImgBatch (Img2ImgBatchRequest) returns (Img2ImgBatchResponse) {}
+  
+  // Get queue status
+  rpc GetQueueStatus (QueueStatusRequest) returns (QueueStatusResponse) {}
+}
+
+// Request for single image generation
+message Img2ImgRequest {
+  bytes image = 1;  // Input image as bytes
+  string prompt = 2;  // Text prompt
+  int32 num_inference_steps = 3;  // Default: 2
+  float strength = 4;  // Default: 0.8
+  float guidance_scale = 5;  // Default: 0.0
+  int64 seed = 6;  // Optional random seed
+}
+
+// Response for single image generation
+message Img2ImgResponse {
+  bytes generated_image = 1;  // Generated image as bytes
+  int64 request_id = 2;  // Unique request identifier
+  int64 processing_time_ms = 3;  // Processing time in milliseconds
+}
+
+// Request for batch image generation
+message Img2ImgBatchRequest {
+  bytes image = 1;  // Input image as bytes
+  string prompt = 2;  // Text prompt
+  int32 num_images = 3;  // Number of images to generate
+  int32 num_inference_steps = 4;  // Default: 2
+  float strength = 5;  // Default: 0.8
+  float guidance_scale = 6;  // Default: 0.0
+  int64 seed = 7;  // Optional random seed
+}
+
+// Response for batch image generation
+message Img2ImgBatchResponse {
+  repeated bytes generated_images = 1;  // Generated images as bytes
+  int64 request_id = 2;  // Unique request identifier
+  int64 processing_time_ms = 3;  // Processing time in milliseconds
+}
+
+// Request for queue status
+message QueueStatusRequest {}
+
+// Response for queue status
+message QueueStatusResponse {
+  int32 queue_length = 1;  // Current number of requests in queue
+  int64 estimated_wait_time_ms = 2;  // Estimated wait time in milliseconds
+  int32 active_requests = 3;  // Number of currently processing requests
+} 

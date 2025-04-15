@@ -1,0 +1,161 @@
+# Product Requirements Document: SDXL-Turbo gRPC Server
+
+## Overview
+This document outlines the requirements for a high-performance Python server that serves the SDXL-Turbo model for image-to-image generation. The server will use gRPC for communication, implement a FIFO queue system for handling multiple concurrent requests, and operate exclusively on localhost.
+
+## Goals
+- Create a fast, reliable server for SDXL-Turbo image-to-image generation
+- Support both single image and batch generation requests
+- Implement an efficient queue management system
+- Provide comprehensive error handling and monitoring
+- Optimize for in-memory processing to maximize performance
+
+## Target Users
+- Backend Python servers running on the same machine (localhost)
+
+## Hardware Requirements
+- MacBook Pro with M4 chip
+- MPS (Metal Performance Shaders) acceleration
+
+## Functional Requirements
+
+### 1. Server Architecture
+
+#### 1.1 Protocol
+- **gRPC** as the communication protocol for high performance
+- Protocol Buffers (protobuf) for efficient data serialization
+- Asynchronous request handling to manage concurrent requests
+
+#### 1.2 Endpoints
+1. **img2img**
+   - Input: Image data, prompt, and generation parameters
+   - Output: Generated image
+   - Purpose: Generate a single image based on input image and prompt
+
+2. **img2img-batch**
+   - Input: Image data, prompt, number of images, and generation parameters
+   - Output: Array of generated images
+   - Purpose: Generate multiple variations of an image with different seeds
+
+#### 1.3 Queue System
+- FIFO (First-In-First-Out) queue for processing requests
+- Status endpoint to check current queue length and estimated processing times
+- Ability to handle multiple incoming requests without resource conflicts
+
+### 2. Data Handling
+
+#### 2.1 Image Formats
+- Images transmitted as binary data in memory
+- Support for common image formats (PNG, JPEG)
+- No file I/O operations for image handling to maximize performance
+
+#### 2.2 Parameters
+- Required parameters:
+  - `prompt` (string): Text prompt for image generation
+  - `image` (bytes): Input image data
+
+- Optional parameters with default values:
+  - `num_inference_steps` (int, default=2): Number of inference steps
+  - `strength` (float, default=0.8): Strength parameter for generation
+  - `guidance_scale` (float, default=0.0): Guidance scale for generation
+  - `seed` (int, default=None): Random seed for reproducibility
+  - `batch_size` (int, default=1): Number of images to generate (for batch endpoint)
+
+#### 2.3 Response Format
+- Generated image(s) returned as binary data
+- Metadata including generation parameters, processing time, and request ID
+- Status code indicating success or specific error condition
+
+### 3. Performance Optimization
+
+#### 3.1 Model Loading
+- Load model once at server startup
+- Keep model in memory to avoid reloading overhead
+- Optimize model for MPS acceleration
+
+#### 3.2 Memory Management
+- Implement efficient memory allocation/deallocation for image processing
+- Monitor memory usage to prevent OOM errors
+- Use streaming for larger batch requests if necessary
+
+#### 3.3 Concurrent Processing
+- Utilize async processing to handle queue management efficiently
+- Implement appropriate thread/process management based on MPS capabilities
+- Optimize for M4 chip's specific architecture
+
+### 4. Error Handling
+
+#### 4.1 Error Types
+- Input validation errors (invalid parameters, corrupt image data)
+- Processing errors (model failures, GPU/MPS errors)
+- System errors (memory issues, server crashes)
+
+#### 4.2 Error Responses
+- Structured error messages with error code, description, and suggested resolution
+- Detailed logging for debugging
+- Graceful degradation where possible
+
+### 5. Monitoring and Logging
+
+#### 5.1 Metrics
+- Request count and timing statistics
+- Queue length and wait times
+- Memory and GPU/MPS usage
+- Error rates by type
+
+#### 5.2 Logging
+- Detailed logging for debugging purposes
+- Different log levels (INFO, WARNING, ERROR, DEBUG)
+- Request IDs for tracking requests through the system
+
+## Technical Implementation
+
+### 1. Core Technologies
+- Python 3.10+
+- gRPC for communication
+- PyTorch for ML model execution
+- diffusers library for SDXL-Turbo model
+- Asynchronous processing libraries (asyncio)
+
+### 2. Code Organization
+The server implementation should maintain a clean separation of concerns by organizing code into distinct files:
+
+- **server.py**: Contains the gRPC server implementation, request handling, and endpoint definitions
+- **model.py**: Contains all model-related logic, including loading the SDXL-Turbo model and performing inference
+
+This separation improves maintainability and allows for independent testing and updating of server and model components.
+
+### 3. Deployment Method
+- Python virtual environment (venv)
+- Script for easy setup and initialization
+- Detailed documentation on configuration and usage
+
+## Implementation Plan
+
+### Phase 1: Core Server Implementation
+- Implement gRPC server and protocol definitions
+- Create basic model manager with SDXL-Turbo integration
+- Implement simple queue system
+
+### Phase 2: Advanced Features
+- Add comprehensive error handling
+- Implement monitoring and logging
+- Optimize performance for MPS
+
+### Phase 3: Testing and Documentation
+- Develop test suite for all endpoints
+- Create example clients
+- Write comprehensive documentation
+
+## Future Considerations
+- Potential for containerization with Docker
+- Support for additional models beyond SDXL-Turbo
+- Performance optimizations for different hardware
+- Support for text-to-image generation
+- Extended parameter sets for more control over generation
+
+## Success Metrics
+- Request processing time under X ms (to be determined based on baseline testing)
+- Stable operation under peak load
+- Zero data loss during processing
+- Minimal memory footprint
